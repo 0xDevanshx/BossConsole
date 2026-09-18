@@ -514,13 +514,7 @@ object WorkspaceMcpToolProvider : McpToolProvider {
 
         // Persisted commands were not visible in this MCP invocation's approval arguments.
         // Require a separate open_terminal call so its command receives normal risk review.
-        if (!isShippedTemplate && workspace.layout.hasInitialCommands()) {
-            return McpToolResult(
-                "Workspace contains terminal startup commands. Open it through the workspace UI, " +
-                    "or remove the startup commands and invoke open_terminal with each command explicitly.",
-                isError = true,
-            )
-        }
+        checkStartupCommandSecurity(workspace)?.let { return it }
 
         // Idempotency: Reopening an existing workspace does not duplicate it or disturb unrelated windows
         if (splitViewState != null && splitViewState.currentWorkspaceId == workspace.id) {
@@ -609,6 +603,8 @@ object WorkspaceMcpToolProvider : McpToolProvider {
         val runningIds = workspaceManager.windowWorkspaces.value[targetWindowId].orEmpty()
         val (space, reused) = resolveBootstrapSpace(targetWindowId, projectPath, runningIds)
 
+        checkStartupCommandSecurity(space)?.let { return it }
+
         // Fast path: the window already shows this Space, so the live terminal is left alone.
         if (splitViewState.currentWorkspaceId == space.id) {
             return McpToolResult(
@@ -668,6 +664,22 @@ object WorkspaceMcpToolProvider : McpToolProvider {
             },
             existing != null,
         )
+    }
+
+    /**
+     * Rejects workspaces containing terminal startup commands unless they are shipped templates.
+     * Opening these via MCP would execute commands without an approval gate.
+     */
+    internal fun checkStartupCommandSecurity(workspace: LayoutWorkspace): McpToolResult? {
+        val isShippedTemplate = workspace.id in PredefinedWorkspaces.allIds
+        if (!isShippedTemplate && workspace.layout.hasInitialCommands()) {
+            return McpToolResult(
+                "Workspace contains terminal startup commands. Open it through the workspace UI, " +
+                    "or remove the startup commands and invoke open_terminal with each command explicitly.",
+                isError = true,
+            )
+        }
+        return null
     }
 
     /**

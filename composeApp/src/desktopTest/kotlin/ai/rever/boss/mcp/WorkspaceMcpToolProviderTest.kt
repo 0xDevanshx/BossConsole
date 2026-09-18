@@ -9,6 +9,7 @@ import ai.rever.boss.components.workspaces.PredefinedWorkspaces
 import ai.rever.boss.components.workspaces.WorkspaceFileManager
 import ai.rever.boss.components.workspaces.WorkspaceFileManagerCommon
 import ai.rever.boss.components.workspaces.extractCurrentWorkspace
+import ai.rever.boss.components.workspaces.workspaceManager
 import ai.rever.boss.plugin.api.McpToolResult
 import ai.rever.boss.plugin.api.TabComponentWithUI
 import ai.rever.boss.plugin.api.TabInfo
@@ -124,6 +125,7 @@ class WorkspaceMcpToolProviderTest {
                     id = "hidden-command",
                     name = "Hidden command",
                     description = "test",
+                    projectPath = workspaceDir.absolutePath.replace('\\', '/'),
                     layout =
                         SplitConfig.SinglePanel(
                             PanelConfig(
@@ -132,6 +134,8 @@ class WorkspaceMcpToolProviderTest {
                             ),
                         ),
                 )
+            
+            workspaceManager.registerWorkspace(workspace)
             fileManager.saveWorkspace(workspace)
             val file = File(workspaceDir, WorkspaceFileManagerCommon.fileNameForId(workspace.id))
             val filePath = file.absolutePath.replace('\\', '/')
@@ -139,12 +143,14 @@ class WorkspaceMcpToolProviderTest {
                 listOf(
                     """{"workspaceId":"hidden-command"}""",
                     """{"workspacePath":"$filePath"}""",
+                    """{"path":"${workspace.projectPath}"}""",
                 )
             for (selector in selectors) {
                 val result = createTestCore().invoke("open_workspace", selector)
-                assertTrue(result.isError)
+                assertTrue(result.isError, "Should fail for selector $selector")
                 assertTrue(result.text.contains("startup commands"), result.text)
             }
+            workspaceManager.deleteWorkspaceById(workspace.id)
         }
 
     @Test
