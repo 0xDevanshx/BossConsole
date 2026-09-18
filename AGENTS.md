@@ -71,6 +71,28 @@ For a bottom split use `panel: horizontal_split`. Reuse a pane across calls by p
 - Supabase + Edge Functions
 - BossTerm for terminal integration (bundled in the `terminal-tab` plugin)
 
+## Remote UI property patches are tri-state
+
+`WidgetDiffEngine` must distinguish three operations on a widget property: leave it alone, set it
+to a string, and remove it. An empty string cannot mean removal. It is a valid value for text,
+labels, selections and event ids, and the builder emits both omitted optional properties and
+present empty required properties.
+
+`DiffOperation.NodeUpdated.changedProperties` therefore carries assignments, while
+`removedProperties` carries deletes. The wire mirrors that split through additive
+`NodeUpdated.removed_properties`
+field 4, introduced with IPC 1.2.0. `apply` removes first and then applies changed values, so an
+explicit set wins if a malformed or hand-built patch names one key in both collections. Encoders
+sort removed keys for deterministic bytes. Older receivers safely ignore field 4; they retain a
+stale property until a full tree arrives, which is the existing failure rather than a new one.
+
+`NodeUpdated` is a manually implemented plain class rather than a data class now because
+`boss-ui-sdk` is published to external runtimes. Keep its original three-argument constructor,
+`component1` through `component3`, `copy`, and generated `copy$default` JVM descriptors. New code
+that needs to alter the removal set uses the four-argument constructor or
+`copyWithRemovedProperties`. `WidgetDiffEngineTest` reflects the old descriptors so a refactor
+cannot silently break an already-built runtime.
+
 ## Plugin dependencies are resolved at install time
 
 `plugin.json` `dependencies` used to be read in exactly one place -
@@ -530,6 +552,11 @@ Adding one means an entry in `CredentialBrokers.all()`. The plugin-facing side n
 null for every plugin, silently - that has happened before with `mcpToolRegistry`. The
 implementation lives in `desktopMain` (it speaks HTTP), so `DefaultPlugin` reads it through
 `BrokeredCredentialAccess`, a commonMain holder that `main.kt` populates at startup.
+
+It happened a second time with `registerSearchProvider`: neither wrapper forwarded it, so no
+plugin's search provider ever reached global search. `PluginContextWrapperForwardingTest` now
+fails when either wrapper does not declare a `PluginContext` member. It matches by name, so it
+cannot tell a wrong forward from a right one, and a third wrapper has to be added to it.
 
 ### AI credentials are not configured here
 
@@ -1141,9 +1168,9 @@ fallback for URL schemes if `Native.load` fails.
 plugin and opens that plugin's panel, exactly as the workspace button already did with
 `open-workspace-picker`; both helpers live in `components/plugin/TopOfMindActions.kt`.
 
-**The panel id is `PanelId("top-of-mind", 5)`, not `PanelIds.TOP_OF_MIND`.** That constant is
+**The panel id is `PanelId("top-of-mind", 5)`.** The removed `TOP_OF_MIND` constant used
 `PanelId("topofmind", 2)` - a different id string from the one the plugin registers - so opening by
-it matches nothing at all, silently. Only the `panelId` and `pluginId` are compared, so the order
+it matched nothing at all, silently. Only the `panelId` and `pluginId` are compared, so the order
 is carried for honesty rather than for matching.
 
 **When `dispatch` returns false there is no fallback dialog, and that is the point.** Falling back
@@ -2043,7 +2070,16 @@ workspace by selecting the tools you need." Tools install app-wide, not into a S
 ### Governed MCP invocation (#371)
 
 The host policy applies to registry invocation; it does not isolate installed JVM
-plugins. Unknown tool names default to ALLOW. Known mutations default to ASK with
+plugins. The mutating gate is a fail-closed OR: the host's name signals - known
+mutating names, then known suffixes - are final, and the provider's own
+`McpToolDefinition.readOnly` declaration is consulted only after them, so a
+`readOnly = false` declaration makes an innocently named tool mutating while a
+`readOnly = true` claim can never launder a name the host already knows (#804).
+`null` preserves the name-only answer bit for bit, which is why existing callers
+compile and behave unchanged. `readOnly` defaults to `true` in the plugin API, so
+this catches an honest plugin declaring side effects and is deliberately not a
+defence against a hostile one that lies. Unknown tool names default to ALLOW while
+the provider declares (or defaults to) `readOnly = true`. Known mutations default to ASK with
 a 45-second timeout. Each queued prompt is delivered to exactly one window and
 window teardown denies its owned request. Session trust is process-wide and can
 be cleared using “Revoke MCP session trust” in the bottom bar; restore the bar if
@@ -2080,9 +2116,18 @@ provided. Ledger redaction is bounded and best effort, not a guarantee for secre
 under arbitrary keys. Queue overflow and cancellation before/after dispatch have
 distinct ledger dispositions. Risk classification from #336 feeds this same policy and approval path; there is
 no second sandbox prompt. Explicit policies and session trust retain precedence.
-HIGH/CRITICAL names use the mutating default, while unknown names remain allowed
+HIGH/CRITICAL risk names use the mutating default alongside catalog-mutating
+and provider-declared mutating names, while everything else remains allowed
 by default. Risk reasons and sanitized arguments appear together in the existing
 approval dialog. #362 is closed pending extraction into a management plugin.
+
+The workspace/terminal lifecycle tools (`WorkspaceMcpToolProvider`: open_workspace,
+create_workspace, open_terminal, close_workspace and their aliases) are declared
+`readOnly = false`, so the ASK default above is their confirmation layer - the role the
+`DeepLinkOrigin` prompt plays for `boss://terminal?command=`. An operator "Always Allow"
+on `open_terminal` therefore runs later invocations unconfirmed, i.e. as strong as an
+unconfirmed external deep link; the command still passes the shape check and the shell
+risk evaluation (HIGH, CRITICAL for destructive patterns) on every call.
 
 ## Process log authority and lifetime
 
@@ -2156,7 +2201,9 @@ observation/plugin architecture; this PR does not expose a policy writer to plug
 
 The MCP tool policies dialog also groups currently registered, enabled tools by
 provider into sections. All allows the section, View selects tools declared
-read-only except names in the host mutating catalog and HIGH/CRITICAL risk tools, Edit selects the remaining
+read-only except names the mutating catalog rejects - the same single `isMutating` call the invoke
+gate uses, so section buckets and the gate can never disagree - and HIGH/CRITICAL risk tools,
+Edit selects the remaining
 tools, and Custom uses individual checkboxes. Applying a preset denies tools
 outside its selection; existing tool rules are replaced only after the operator
 confirms the displayed counts and scope. These are explicit tool-name rules,
