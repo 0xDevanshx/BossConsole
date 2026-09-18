@@ -15,7 +15,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import ai.rever.boss.utils.atomicWriteText
 import kotlinx.serialization.json.Json
 import java.io.File
 
@@ -37,6 +40,7 @@ actual object KeymapSettingsManager {
             ignoreUnknownKeys = true
         }
 
+    private val saveMutex = Mutex()
     private val _currentSettings = MutableStateFlow<KeymapSettings>(KeymapPresets.getBOSSDefault())
     actual val currentSettings: StateFlow<KeymapSettings> = _currentSettings.asStateFlow()
 
@@ -67,7 +71,7 @@ actual object KeymapSettingsManager {
                 if (migrated != loaded) {
                     try {
                         val migratedContent = json.encodeToString(KeymapSettings.serializer(), migrated)
-                        settingsFile.writeText(migratedContent)
+                        settingsFile.atomicWriteText(migratedContent)
                         logger.debug(LogCategory.SYSTEM, "Migrated keymap settings saved")
                     } catch (e: Exception) {
                         logger.warn(LogCategory.SYSTEM, "Could not save migrated keymap settings", error = e)
@@ -84,7 +88,7 @@ actual object KeymapSettingsManager {
                 // Save default settings to file
                 try {
                     val content = json.encodeToString(KeymapSettings.serializer(), defaultSettings)
-                    settingsFile.writeText(content)
+                    settingsFile.atomicWriteText(content)
                     logger.debug(LogCategory.SYSTEM, "Created default keymap settings file", mapOf("path" to settingsFile.absolutePath))
                 } catch (e: Exception) {
                     logger.warn(LogCategory.SYSTEM, "Could not write default keymap settings file", error = e)
@@ -92,6 +96,16 @@ actual object KeymapSettingsManager {
             }
         } catch (e: Exception) {
             logger.error(LogCategory.SYSTEM, "Failed to load keymap settings, using defaults", error = e)
+            try {
+                if (settingsFile.exists()) {
+                    val timestamp = System.currentTimeMillis()
+                    val corruptedFile = File(settingsFile.absolutePath + ".corrupted." + timestamp)
+                    settingsFile.copyTo(corruptedFile, overwrite = false)
+                    logger.info(LogCategory.SYSTEM, "Backed up corrupted keymap settings to ${corruptedFile.name}")
+                }
+            } catch (backupErr: Exception) {
+                logger.warn(LogCategory.SYSTEM, "Could not back up corrupted keymap settings", error = backupErr)
+            }
             _currentSettings.value = KeymapPresets.getBOSSDefault()
         }
     }
@@ -185,12 +199,14 @@ actual object KeymapSettingsManager {
      */
     actual suspend fun saveSettings() =
         withContext(Dispatchers.IO) {
-            try {
-                val content = json.encodeToString(KeymapSettings.serializer(), _currentSettings.value)
-                settingsFile.writeText(content)
-                logger.debug(LogCategory.SYSTEM, "Keymap settings saved")
-            } catch (e: Exception) {
-                logger.error(LogCategory.SYSTEM, "Failed to save keymap settings", error = e)
+            saveMutex.withLock {
+                try {
+                    val content = json.encodeToString(KeymapSettings.serializer(), _currentSettings.value)
+                    settingsFile.atomicWriteText(content)
+                    logger.debug(LogCategory.SYSTEM, "Keymap settings saved")
+                } catch (e: Exception) {
+                    logger.error(LogCategory.SYSTEM, "Failed to save keymap settings", error = e)
+                }
             }
         }
 
