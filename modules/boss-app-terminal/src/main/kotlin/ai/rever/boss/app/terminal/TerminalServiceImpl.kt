@@ -47,12 +47,24 @@ class TerminalServiceImpl(
                             .asRuntimeException()
                     }
                     currentCoroutineContext().ensureActive()
-                    // Shutdown cannot overlook an admitted launch between process creation and registration.
+                    
+                    // Reserve active slot under lock first
                     synchronized(lock) {
                         reserveSlot()
                         admitted = true
-                        val launched = TerminalSession.launch(request, ownerInstance)
-                        session = launched
+                    }
+                    
+                    // Spawn process OUTSIDE the lock to prevent blocking other RPCs
+                    val launched = TerminalSession.launch(request, ownerInstance)
+                    session = launched
+                    
+                    // Shutdown cannot overlook an admitted launch between process creation and registration.
+                    synchronized(lock) {
+                        if (closed) {
+                            // Service closed while we were spawning. We must abort.
+                            launched.terminate()
+                            throw Status.UNAVAILABLE.withDescription("Terminal service is closed").asRuntimeException()
+                        }
                         retain(launched)
                         launched.startPump { activeSlots.release() }
                         pumping = true
@@ -170,6 +182,12 @@ class TerminalServiceImpl(
         if (session.active) session.terminate() else synchronized(lock) { sessions.remove(session.id) }
         return Empty.getDefaultInstance()
     }
+
+    override suspend fun closeInput(request: CloseInputRequest): Empty =
+        withContext(Dispatchers.IO) {
+            session(request.sessionId).closeInput()
+            Empty.getDefaultInstance()
+        }
 
     override suspend fun listSessions(request: Empty): ListSessionsResponse {
         val caller = IpcCall.current()
