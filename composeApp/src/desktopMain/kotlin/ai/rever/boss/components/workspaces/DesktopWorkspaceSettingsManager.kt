@@ -85,12 +85,18 @@ actual object WorkspaceSettingsManager {
                 if (settingsFile.exists()) {
                     val timestamp = System.currentTimeMillis()
                     val corruptedFile = File(settingsFile.absolutePath + ".corrupted." + timestamp)
-                    settingsFile.copyTo(corruptedFile, overwrite = false)
-                    logger.info(LogCategory.SYSTEM, "Backed up corrupted workspace settings to ${corruptedFile.name}")
+                    val renamed = settingsFile.renameTo(corruptedFile)
+                    if (!renamed) {
+                        settingsFile.copyTo(corruptedFile, overwrite = true)
+                        settingsFile.delete()
+                    }
+                    logger.info(LogCategory.SYSTEM, "Renamed corrupted workspace settings aside to ${corruptedFile.name}")
                 }
             } catch (backupErr: Exception) {
                 logger.warn(LogCategory.SYSTEM, "Could not back up corrupted workspace settings", error = backupErr)
+                settingsFile.delete()
             }
+            writeSettings(_currentSettings.value)
         }
     }
 

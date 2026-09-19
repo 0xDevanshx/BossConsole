@@ -100,13 +100,26 @@ actual object KeymapSettingsManager {
                 if (settingsFile.exists()) {
                     val timestamp = System.currentTimeMillis()
                     val corruptedFile = File(settingsFile.absolutePath + ".corrupted." + timestamp)
-                    settingsFile.copyTo(corruptedFile, overwrite = false)
-                    logger.info(LogCategory.SYSTEM, "Backed up corrupted keymap settings to ${corruptedFile.name}")
+                    val renamed = settingsFile.renameTo(corruptedFile)
+                    if (!renamed) {
+                        settingsFile.copyTo(corruptedFile, overwrite = true)
+                        settingsFile.delete()
+                    }
+                    logger.info(LogCategory.SYSTEM, "Renamed corrupted keymap settings aside to ${corruptedFile.name}")
                 }
             } catch (backupErr: Exception) {
                 logger.warn(LogCategory.SYSTEM, "Could not back up corrupted keymap settings", error = backupErr)
+                settingsFile.delete()
             }
-            _currentSettings.value = KeymapPresets.getBOSSDefault()
+            val defaultSettings = KeymapPresets.getBOSSDefault()
+            _currentSettings.value = defaultSettings
+            try {
+                val content = json.encodeToString(KeymapSettings.serializer(), defaultSettings)
+                settingsFile.atomicWriteText(content)
+                logger.debug(LogCategory.SYSTEM, "Wrote fresh default keymap settings after corruption")
+            } catch (writeErr: Exception) {
+                logger.warn(LogCategory.SYSTEM, "Could not write fresh default keymap settings", error = writeErr)
+            }
         }
     }
 
